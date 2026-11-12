@@ -30,6 +30,7 @@ class DemoAPI:
         self.offset = 0
         self.retry_at = 0
         self.markets = {}
+        self.symbols = {}
 
     async def request(self, method, path, params=None, *, signed=False):
         if time.monotonic() < self.retry_at:
@@ -81,6 +82,8 @@ class DemoAPI:
             if row["quoteAsset"] == row["marginAsset"] == "USDT"
             and row["contractType"] == "PERPETUAL"
         }
+
+        self.symbols = {market["id"]: market for market in self.markets.values()}
 
     def market(self, symbol):
         try:

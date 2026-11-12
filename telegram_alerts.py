@@ -33,7 +33,7 @@ class Alert:
     side: str
     candle: int
     price: float
-    stop: float
+    stop: float | None
     target: float
     movement: float | None
     volume: float | None
@@ -49,11 +49,11 @@ class Alert:
         )
 
 
-def build_alert(symbol, signal, history):
+def build_alert(symbol, signal, history, *, require_stop=True):
     side, price = signal["side"], signal["price"]
     is_long = side == "buy"
-    stop = stop_level(history[:-1], price, is_long)
-    if stop is None:
+    stop = stop_level(history[:-1], price, is_long) if require_stop else None
+    if require_stop and stop is None:
         return None
     return Alert(symbol, side, history[-1][0], price, stop,
                  price * (1.01 if is_long else 0.99), signal.get("ret"),
