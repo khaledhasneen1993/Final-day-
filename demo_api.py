@@ -8,6 +8,7 @@ import aiohttp
 import ccxt
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
+from yarl import URL
 
 REST_URL = "https://demo-fapi.binance.com"
 WS_URL = "wss://demo-fstream.binance.com/market/stream"
@@ -43,9 +44,11 @@ class DemoAPI:
                                               padding.PKCS1v15(), hashes.SHA256())
             query["signature"] = base64.b64encode(signature).decode("ascii")
             headers["X-MBX-APIKEY"] = self.api_key
+        # Preserve the percent-encoded RSA signature, including encoded slashes.
+        url = URL(REST_URL + path + "?" + urlencode(query), encoded=True)
         try:
-            async with self.session.request(method, REST_URL + path + "?" + urlencode(query),
-                                            headers=headers, allow_redirects=False) as response:
+            async with self.session.request(method, url, headers=headers,
+                                            allow_redirects=False) as response:
                 if response.status in (418, 429):
                     fallback = 120 if response.status == 418 else 10
                     try:

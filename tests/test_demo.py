@@ -3,7 +3,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import AsyncMock, MagicMock
-from urllib.parse import parse_qsl, urlsplit
+from urllib.parse import parse_qsl, quote, urlsplit
 from decimal import Decimal
 
 from cryptography.hazmat.primitives import hashes
@@ -23,12 +23,13 @@ class DemoTests(unittest.IsolatedAsyncioTestCase):
         response.json = AsyncMock(return_value={"dualSidePosition": False})
         await DemoAPI(session, "demo-key", key).private("GET", "v1/positionSide/dual")
         (_, url), kwargs = session.request.call_args
-        parsed = urlsplit(url)
+        parsed = urlsplit(str(url))
         self.assertEqual(parsed.netloc, "demo-fapi.binance.com")
         self.assertFalse(kwargs["allow_redirects"])
         self.assertEqual(kwargs["headers"], {"X-MBX-APIKEY": "demo-key"})
         payload, _ = parsed.query.rsplit("&signature=", 1)
         signature = dict(parse_qsl(parsed.query))["signature"]
+        self.assertEqual(url.raw_query_string, f"{payload}&signature={quote(signature, safe='')}")
         key.public_key().verify(base64.b64decode(signature), payload.encode(),
                                 padding.PKCS1v15(), hashes.SHA256())
 
