@@ -1,6 +1,8 @@
 import asyncio
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
+
+import aiohttp
 
 from continuous_scanner import CandleGap, ContinuousScanner
 from telegram_alerts import TelegramAlerts
@@ -135,6 +137,13 @@ class ContinuousTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.alerts.queue.empty())
 
     async def test_socket_reconnect_reseeds_and_closes_cleanly(self):
+        await self.assert_socket_reconnect(silent=False)
+
+    async def test_non_candle_frames_do_not_prevent_reconnect(self):
+        with patch("continuous_scanner.CANDLE_SILENCE_TIMEOUT", 0.05):
+            await self.assert_socket_reconnect(silent=True)
+
+    async def assert_socket_reconnect(self, *, silent):
         opened_twice = asyncio.Event()
         tracker = {"connections": 0, "seeds": 0, "closed": False}
         original_seed = self.scanner.seed
@@ -157,7 +166,11 @@ class ContinuousTests(unittest.IsolatedAsyncioTestCase):
             def __aiter__(socket):
                 async def messages():
                     if socket.number == 1:
-                        raise ConnectionError("simulated disconnect")
+                        if not silent:
+                            raise ConnectionError("simulated disconnect")
+                        while True:
+                            yield Mock(type=aiohttp.WSMsgType.TEXT, **{"json.return_value": {"ping": 1}})
+                            await asyncio.sleep(0.01)
                     await asyncio.Future()
                     yield None
                 return messages()

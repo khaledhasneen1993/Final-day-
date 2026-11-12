@@ -21,6 +21,7 @@ UNIVERSE_REFRESH_SEC = 600
 
 WS_URL = "wss://fstream.binance.com/market/stream"
 MAX_EVENT_AGE = 10.0
+CANDLE_SILENCE_TIMEOUT = 30
 BOOK_CHECK_INTERVAL = 1.0
 BOOK_REQUEST_SPACING = 0.25
 WORKERS = 8
@@ -251,15 +252,23 @@ class ContinuousScanner:
                 self.queue.task_done()
 
     async def read_stream(self, socket):
-        async for message in socket:
-            if message.type == aiohttp.WSMsgType.TEXT:
-                payload = message.json()
-                if "code" in payload:
-                    raise ConnectionError(str(payload))
-                self.ingest(payload)
-            elif message.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSE,
-                                  aiohttp.WSMsgType.CLOSED):
-                break
+        loop = asyncio.get_running_loop()
+        try:
+            async with asyncio.timeout(CANDLE_SILENCE_TIMEOUT) as deadline:
+                async for message in socket:
+                    if message.type == aiohttp.WSMsgType.TEXT:
+                        payload = message.json()
+                        if "code" in payload:
+                            raise ConnectionError(str(payload))
+                        previous_events = self.events
+                        self.ingest(payload)
+                        if self.events != previous_events:
+                            deadline.reschedule(loop.time() + CANDLE_SILENCE_TIMEOUT)
+                    elif message.type in (aiohttp.WSMsgType.ERROR, aiohttp.WSMsgType.CLOSE,
+                                          aiohttp.WSMsgType.CLOSED):
+                        break
+        except TimeoutError:
+            raise ConnectionError(f"No fresh candle updates for {CANDLE_SILENCE_TIMEOUT}s") from None
         raise ConnectionError("Candle stream closed")
 
     async def stream_loop(self):
@@ -288,7 +297,7 @@ class ContinuousScanner:
                     async with session.ws_connect(url, heartbeat=20, receive_timeout=30) as socket:
                         self.connected = True
                         log.info("CONTINUOUS WATCH CONNECTED | symbols=%d | signals checked on updates", len(warmed))
-                        delay = 1
+                        initial_events = self.events
                         reader = asyncio.create_task(self.read_stream(socket))
                         change = asyncio.create_task(self.changed.wait())
                         reseed = asyncio.create_task(asyncio.sleep(30 if len(warmed) < len(symbols) else 23 * 3600))
@@ -298,6 +307,8 @@ class ContinuousScanner:
                                 await reader
                         finally:
                             self.connected = False
+                            if self.events > initial_events:
+                                delay = 1
                             reader.cancel()
                             change.cancel()
                             reseed.cancel()
