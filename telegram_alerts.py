@@ -1,11 +1,12 @@
 """Deliver qualified scanner signals to an optional Telegram chat."""
 
 import asyncio
+import logging
 import os
 
 import aiohttp
 
-from binance_cascade_hunter_dynamic_v2 import log
+log = logging.getLogger(__name__)
 
 
 def stop_level(candles, price, is_long):
@@ -38,8 +39,6 @@ class TelegramAlerts:
         chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
         if token and chat_id:
             return cls(token, chat_id)
-        if token or chat_id:
-            log.warning("Telegram alerts disabled: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
         return None
 
     def enqueue(self, symbol, signal, history):
@@ -66,6 +65,7 @@ class TelegramAlerts:
             log.warning("Telegram alert queue full for %s", symbol)
             return
         self.last_candle[key] = candle
+        return True
 
     async def send(self, session, message):
         for attempt in range(3):
