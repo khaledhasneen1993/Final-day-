@@ -17,7 +17,7 @@ class TelegramAlertsTests(unittest.IsolatedAsyncioTestCase):
         session = MagicMock()
         session.post.return_value.__aenter__.return_value = response
 
-        await alerts.send(session, alerts.queue.get_nowait())
+        await alerts.send(session, alerts.queue.get_nowait().message())
 
         session.post.assert_called_once_with(
             "https://api.telegram.org/botfake-token/sendMessage",

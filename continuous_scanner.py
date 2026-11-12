@@ -59,6 +59,8 @@ class ContinuousScanner:
         self.event_times = {}
         self.received = {}
         self.last_book_check = {}
+        self.books = {}
+        self.refreshed_at = None
         self.queue = asyncio.Queue(maxsize=MAX_SYMBOLS)
         self.pending = set()
         self.changed = asyncio.Event()
@@ -95,6 +97,7 @@ class ContinuousScanner:
         if selected != self.symbols:
             self.symbols = selected
             self.changed.set()
+        self.refreshed_at = self.wall_clock()
         self.ready.set()
         log.info("CONTINUOUS UNIVERSE | symbols=%d | refresh=%ss", len(selected), UNIVERSE_REFRESH_SEC)
 
@@ -164,20 +167,39 @@ class ContinuousScanner:
         self.events += 1
         self.schedule(symbol)
 
-    def signal(self, symbol):
-        if (not self.connected or symbol not in self.symbols or symbol not in self.received
-                or self.clock() - self.received[symbol] > MAX_EVENT_AGE
-                or self.wall_clock() - self.event_times[symbol] / 1000 > MAX_EVENT_AGE):
-            return None
-        rows = list(self.histories.get(symbol, ()))
+    def metrics(self, symbol):
+        rows = self.histories.get(symbol, ())
         if len(rows) < 15:
             return None
         ret = (rows[-1][4] - rows[-3][4]) / rows[-3][4]
-        average = sum(r[5] for r in rows[-15:-3]) / 12
+        average = sum(row[5] for row in list(rows)[-15:-3]) / 12
         spike = rows[-1][5] / average if average > 0 else 0
-        if abs(ret) <= CASCADE_THRESHOLD or spike <= VOLUME_SPIKE:
-            return None
         return {"side": "buy" if ret > 0 else "sell", "price": rows[-1][4], "ret": ret, "spike": spike}
+
+    def fresh(self, symbol):
+        return (self.connected and symbol in self.received
+                and self.clock() - self.received[symbol] <= MAX_EVENT_AGE
+                and self.wall_clock() - self.event_times[symbol] / 1000 <= MAX_EVENT_AGE)
+
+    def signal(self, symbol):
+        if symbol not in self.symbols or not self.fresh(symbol):
+            return None
+        metrics = self.metrics(symbol)
+        if metrics and abs(metrics["ret"]) > CASCADE_THRESHOLD and metrics["spike"] > VOLUME_SPIKE:
+            return metrics
+        return None
+
+    def snapshot(self):
+        rows = []
+        for symbol in self.symbols:
+            book, at = self.books.get(symbol, (None, 0))
+            rows.append({
+                "symbol": symbol, "metrics": self.metrics(symbol),
+                "fresh": self.fresh(symbol), "event": self.event_times.get(symbol),
+                "imbalance": book if self.fresh(symbol) and self.clock() - at <= MAX_EVENT_AGE else None,
+            })
+        return {"connected": self.connected, "events": self.events, "book_checks": self.book_checks,
+                "queued": self.alerts_queued, "refresh_at": self.refreshed_at, "symbols": rows}
 
     async def evaluate(self, symbol):
         signal = self.signal(symbol)
@@ -200,6 +222,7 @@ class ContinuousScanner:
             if not all(math.isfinite(v) and v >= 0 for v in (bids, asks)):
                 return
             imbalance = (bids - asks) / (bids + asks) if bids + asks else 0
+            self.books[symbol] = (imbalance, self.clock())
         except Exception as error:
             self.book_pause_until = self.clock() + 5
             log.warning("Order book check failed %s (backoff 5s): %s", symbol, error)
@@ -210,7 +233,7 @@ class ContinuousScanner:
         if not ((signal["side"] == "buy" and imbalance > ORDERBOOK_THRESHOLD)
                 or (signal["side"] == "sell" and imbalance < -ORDERBOOK_THRESHOLD)):
             return
-        if self.alerts.enqueue(symbol, signal, list(self.histories[symbol])):
+        if self.alerts.enqueue(symbol, {**signal, "imbalance": imbalance}, list(self.histories[symbol])):
             self.alerts_queued += 1
             log.info("SIGNAL QUEUED %s | move=%.3f%% volume=%.2fx imbalance=%.3f",
                      symbol, signal["ret"] * 100, signal["spike"], imbalance)
@@ -248,6 +271,7 @@ class ContinuousScanner:
                 self.connected = False
                 self.received.clear()
                 self.event_times.clear()
+                self.books.clear()
                 symbols = tuple(self.symbols)
                 try:
                     if not symbols:

@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import os
+from dataclasses import dataclass
 
 import aiohttp
 
@@ -26,12 +27,35 @@ def stop_level(candles, price, is_long):
     return extreme((level for level in levels if is_protective(level)), default=None)
 
 
+@dataclass(frozen=True)
+class Alert:
+    symbol: str
+    side: str
+    candle: int
+    price: float
+    stop: float
+    target: float
+    movement: float | None
+    volume: float | None
+    imbalance: float | None
+
+    def message(self):
+        return (
+            f"العملة: {self.symbol.split(':', 1)[0]}\n"
+            f"الاتجاه: {'Long' if self.side == 'buy' else 'Short'}\n"
+            f"السعر الحالي: {self.price:.12g}\n"
+            f"وقف الخسارة: {self.stop:.12g}\n"
+            f"الهدف: {self.target:.12g}"
+        )
+
+
 class TelegramAlerts:
     def __init__(self, token, chat_id):
         self.url = f"https://api.telegram.org/bot{token}/sendMessage"
         self.chat_id = chat_id
         self.queue = asyncio.Queue(maxsize=100)
         self.last_candle = {}
+        self.ledger = None
 
     @classmethod
     def from_environment(cls):
@@ -47,20 +71,17 @@ class TelegramAlerts:
         candle = history[-1][0]
         if candle <= self.last_candle.get(key, -1):
             return
+        if self.ledger is not None and self.ledger.contains(symbol, side, candle):
+            return
         is_long = side == "buy"
         stop = stop_level(history[:-1], price, is_long)
         if stop is None:
             return
         target = price * (1.01 if is_long else 0.99)
-        message = (
-            f"العملة: {symbol.split(':', 1)[0]}\n"
-            f"الاتجاه: {'Long' if is_long else 'Short'}\n"
-            f"السعر الحالي: {price:.12g}\n"
-            f"وقف الخسارة: {stop:.12g}\n"
-            f"الهدف: {target:.12g}"
-        )
+        alert = Alert(symbol, side, candle, price, stop, target,
+                      signal.get("ret"), signal.get("spike"), signal.get("imbalance"))
         try:
-            self.queue.put_nowait(message)
+            self.queue.put_nowait(alert)
         except asyncio.QueueFull:
             log.warning("Telegram alert queue full for %s", symbol)
             return
@@ -76,7 +97,7 @@ class TelegramAlerts:
                     allow_redirects=False,
                 ) as response:
                     if response.status == 200 and (await response.json()).get("ok") is True:
-                        return
+                        return True
                     if response.status == 429:
                         payload = await response.json()
                         delay = max(delay, int(payload.get("parameters", {}).get("retry_after", delay)))
@@ -93,8 +114,9 @@ class TelegramAlerts:
     async def run(self):
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
             while True:
-                message = await self.queue.get()
+                alert = await self.queue.get()
                 try:
-                    await self.send(session, message)
+                    if await self.send(session, alert.message()) and self.ledger is not None:
+                        self.ledger.record(alert)
                 finally:
                     self.queue.task_done()

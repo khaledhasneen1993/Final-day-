@@ -70,7 +70,7 @@ class ContinuousTests(unittest.IsolatedAsyncioTestCase):
         await self.scanner.evaluate(BTC)
 
         self.assertEqual(self.alerts.queue.qsize(), 1)
-        self.assertEqual(self.alerts.queue.get_nowait().splitlines(), [
+        self.assertEqual(self.alerts.queue.get_nowait().message().splitlines(), [
             "العملة: BTC/USDT", "الاتجاه: Long", "السعر الحالي: 101.1",
             "وقف الخسارة: 100", "الهدف: 102.111",
         ])
