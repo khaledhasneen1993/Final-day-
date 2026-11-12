@@ -48,9 +48,10 @@ def valid_rows(rows):
 
 
 class ContinuousScanner:
-    def __init__(self, market_data, alerts, *, clock=time.monotonic, wall_clock=time.time):
+    def __init__(self, market_data, alerts, *, clock=time.monotonic, wall_clock=time.time, ws_url=WS_URL):
         self.market_data = market_data
         self.alerts = alerts
+        self.ws_url = ws_url
         self.clock = clock
         self.wall_clock = wall_clock
         self.symbols = ()
@@ -283,7 +284,7 @@ class ContinuousScanner:
                     if self.changed.is_set():
                         continue
                     streams = "/".join(self.stream_ids[s].lower() + "@kline_1m" for s in warmed)
-                    url = WS_URL + "?" + urlencode({"streams": streams})
+                    url = self.ws_url + "?" + urlencode({"streams": streams})
                     async with session.ws_connect(url, heartbeat=20, receive_timeout=30) as socket:
                         self.connected = True
                         log.info("CONTINUOUS WATCH CONNECTED | symbols=%d | signals checked on updates", len(warmed))

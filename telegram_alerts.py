@@ -49,6 +49,17 @@ class Alert:
         )
 
 
+def build_alert(symbol, signal, history):
+    side, price = signal["side"], signal["price"]
+    is_long = side == "buy"
+    stop = stop_level(history[:-1], price, is_long)
+    if stop is None:
+        return None
+    return Alert(symbol, side, history[-1][0], price, stop,
+                 price * (1.01 if is_long else 0.99), signal.get("ret"),
+                 signal.get("spike"), signal.get("imbalance"))
+
+
 class TelegramAlerts:
     def __init__(self, token, chat_id):
         self.url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -73,13 +84,9 @@ class TelegramAlerts:
             return
         if self.ledger is not None and self.ledger.contains(symbol, side, candle):
             return
-        is_long = side == "buy"
-        stop = stop_level(history[:-1], price, is_long)
-        if stop is None:
+        alert = build_alert(symbol, signal, history)
+        if alert is None:
             return
-        target = price * (1.01 if is_long else 0.99)
-        alert = Alert(symbol, side, candle, price, stop, target,
-                      signal.get("ret"), signal.get("spike"), signal.get("imbalance"))
         try:
             self.queue.put_nowait(alert)
         except asyncio.QueueFull:
