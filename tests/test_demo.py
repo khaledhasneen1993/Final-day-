@@ -109,3 +109,32 @@ class DemoTests(unittest.IsolatedAsyncioTestCase):
         api.private.assert_any_await("DELETE", "v1/algoOrder", clientAlgoId="fd-test-sl")
         api.private.assert_any_await("DELETE", "v1/algoOrder", clientAlgoId="fd-test-tp")
         self.assertFalse(any(call.args[0] == "POST" for call in api.private.await_args_list))
+
+    async def test_market_reply_without_average_recovers_exact_fills_and_protects(self):
+        api = MagicMock()
+        api.symbols = {"ZECUSDT": {"filters": {"PRICE_FILTER": {"tickSize": "0.01"}}}}
+        trader = DemoTrader(api, ":memory:", Decimal(20), 1)
+        self.addCleanup(trader.db.close)
+        with trader.db:
+            trader.db.execute("""
+                INSERT INTO demo_orders (id, symbol, side, stop, target, status)
+                VALUES ('fd-zec', 'ZECUSDT', 'buy', '', '110', 'pending')
+            """)
+        entry = {"orderId": 42, "status": "FILLED", "executedQty": "0.2"}
+        api.private = AsyncMock(side_effect=[
+            entry, [{"positionAmt": "0.2"}],
+            [{"orderId": 42, "qty": "0.05", "price": "99"},
+             {"orderId": 42, "qty": "0.15", "price": "103"}],
+            APIError(400, -2013), {"algoStatus": "NEW"},
+            APIError(400, -2013), {"algoStatus": "NEW"},
+        ])
+        row = trader.db.execute("SELECT * FROM demo_orders").fetchone()
+        with self.assertLogs("demo_trader", level="INFO") as logs:
+            await trader.reconcile(row, entry)
+        self.assertEqual(tuple(trader.db.execute(
+            "SELECT status, stop FROM demo_orders").fetchone()), ("observed", "98.94"))
+        api.private.assert_any_await("GET", "v1/order", symbol="ZECUSDT",
+                                     origClientOrderId="fd-zec")
+        api.private.assert_any_await("GET", "v1/userTrades", symbol="ZECUSDT", orderId=42)
+        self.assertTrue(all("DEMO PROTECTION ACCEPTED" in line for line in logs.output))
+        self.assertFalse(any(call.args == ("POST", "v1/order") for call in api.private.await_args_list))

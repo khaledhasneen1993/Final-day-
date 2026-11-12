@@ -5,7 +5,7 @@ import hashlib
 import logging
 import sqlite3
 import time
-from decimal import ROUND_CEILING, ROUND_DOWN, Decimal
+from decimal import ROUND_CEILING, ROUND_DOWN, Decimal, InvalidOperation
 
 from demo_api import APIError
 from telegram_alerts import build_alert
@@ -19,6 +19,14 @@ STOP_FRACTION = Decimal("0.03")
 def rounded(value, step, mode=ROUND_DOWN):
     value, step = Decimal(str(value)), Decimal(step)
     return format((value / step).to_integral_value(rounding=mode) * step, "f")
+
+
+def nonnegative_decimal(value):
+    try:
+        result = Decimal(str(value))
+    except InvalidOperation:
+        return None
+    return result if result.is_finite() and result >= 0 else None
 
 
 class DemoTrader:
@@ -161,14 +169,43 @@ class DemoTrader:
                 raise
             return None
 
+    async def fill_price(self, symbol, entry, filled):
+        average = nonnegative_decimal(entry.get("avgPrice"))
+        if average:
+            return average
+        quote = nonnegative_decimal(entry.get("cumQuote"))
+        if quote:
+            return quote / filled
+        order_id = entry.get("orderId")
+        if not order_id:
+            return None
+        fills = await self.api.private("GET", "v1/userTrades", symbol=symbol, orderId=order_id)
+        total_qty = total_quote = Decimal(0)
+        for trade in fills:
+            if str(trade.get("orderId")) != str(order_id):
+                continue
+            quantity = nonnegative_decimal(trade.get("qty"))
+            price = nonnegative_decimal(trade.get("price"))
+            if quantity and price:
+                total_qty += quantity
+                total_quote += quantity * price
+        return total_quote / total_qty if total_qty == filled else None
+
     async def reconcile(self, row, entry=None):
         order_id, symbol, side = row["id"], row["symbol"], row["side"]
-        if entry is None:
+        needs_price = not row["stop"]
+        if (not isinstance(entry, dict) or not entry.get("status")
+                or nonnegative_decimal(entry.get("executedQty")) is None
+                or (needs_price and not nonnegative_decimal(entry.get("avgPrice"))
+                    and not nonnegative_decimal(entry.get("cumQuote")))):
             entry = await self.lookup("v1/order", symbol=symbol, origClientOrderId=order_id)
-        if entry is None:
+        if not isinstance(entry, dict) or not entry.get("status"):
             log.warning("Demo order unresolved for %s (%s); continuing other symbols", symbol, order_id)
             return
-        filled = Decimal(entry["executedQty"])
+        filled = nonnegative_decimal(entry.get("executedQty"))
+        if filled is None:
+            log.warning("Demo filled quantity unconfirmed for %s (%s); will retry", symbol, order_id)
+            return
         position = await self.position(symbol)
         if entry["status"] not in TERMINAL:
             return
@@ -187,8 +224,9 @@ class DemoTrader:
             return
         stop = row["stop"]
         if not stop:
-            entry_price = Decimal(entry["avgPrice"])
-            if entry_price <= 0:
+            entry_price = await self.fill_price(symbol, entry, filled)
+            if entry_price is None:
+                log.warning("Demo fill price unconfirmed for %s (%s); protection will retry", symbol, order_id)
                 return
             tick = self.api.symbols[symbol]["filters"]["PRICE_FILTER"]["tickSize"]
             fraction = 1 - STOP_FRACTION if side == "buy" else 1 + STOP_FRACTION
@@ -204,10 +242,12 @@ class DemoTrader:
             try:
                 existing = await self.lookup("v1/algoOrder", clientAlgoId=algo_id)
                 if existing is None:
-                    await self.api.private("POST", "v1/algoOrder", algoType="CONDITIONAL",
+                    result = await self.api.private("POST", "v1/algoOrder", algoType="CONDITIONAL",
                                            symbol=symbol, side=close_side, type=kind,
                                            quantity=format(abs(position), "f"), reduceOnly="true",
                                            triggerPrice=price, workingType="CONTRACT_PRICE", clientAlgoId=algo_id)
+                    if isinstance(result, dict) and result.get("algoStatus") == "NEW":
+                        log.info("DEMO PROTECTION ACCEPTED | %s | %s | trigger=%s", symbol, kind, price)
                 elif existing["algoStatus"] != "NEW":
                     log.warning("Demo %s for %s is %s; checking the position again",
                                 kind, symbol, existing["algoStatus"])
@@ -236,6 +276,9 @@ class DemoTrader:
                         await self.reconcile(row)
                     except APIError as error:
                         log.warning("Demo reconciliation will retry for %s: %s", row["symbol"], error)
+                    except (KeyError, TypeError, ValueError, InvalidOperation) as error:
+                        log.warning("Unexpected Demo order data for %s (%s); will retry",
+                                    row["symbol"], type(error).__name__)
                 next_reconcile = time.monotonic() + 5
             try:
                 queued_at, alert = await asyncio.wait_for(self.queue.get(), timeout=1)
@@ -248,6 +291,9 @@ class DemoTrader:
                 log.warning("Demo order not confirmed for %s: %s", alert.symbol, error)
                 if error.code == -1021:
                     next_sync = 0
+            except (KeyError, TypeError, ValueError, InvalidOperation) as error:
+                log.warning("Unexpected Demo data for %s (%s); continuing reconciliation",
+                            alert.symbol, type(error).__name__)
             finally:
                 self.queued.discard(alert.symbol)
                 self.queue.task_done()

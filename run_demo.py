@@ -36,6 +36,10 @@ async def run(args, api_key, key):
                 delay = min(delay * 2, 30)
         trader = DemoTrader(api, args.database, args.notional, args.max_positions)
         try:
+            if args.recover:
+                logging.info("Demo recovery active | existing orders only | no new entries")
+                await trader.run()
+                return
             scanner = ContinuousScanner(api, trader, ws_url=WS_URL)
             async with asyncio.TaskGroup() as tasks:
                 tasks.create_task(scanner.run())
@@ -48,11 +52,14 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--check", action="store_true", help="Read-only Demo account check")
+    mode.add_argument("--recover", action="store_true", help="Manage saved Demo orders without opening entries")
     mode.add_argument("--trade-demo", action="store_true", help="Enable Demo order submission")
     parser.add_argument("--notional", help="Required for trading: target USDT position value before fees")
     parser.add_argument("--max-positions", type=int, default=1)
     parser.add_argument("--database", default="final-day-demo.sqlite3")
     args = parser.parse_args()
+    if args.recover and not Path(args.database).is_file():
+        parser.error("Recovery requires the existing Demo database")
     if args.trade_demo:
         try:
             args.notional = Decimal(args.notional or "")
