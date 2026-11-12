@@ -8,6 +8,7 @@ import ccxt.async_support as ccxt
 import binance_cascade_hunter_dynamic_v2 as dynamic
 from paper_account import PaperState, PaperExchange
 from continuous_scanner import ContinuousScanner
+from telegram_alerts import TelegramAlerts
 
 
 class DynamicPaperExchange(PaperExchange):
@@ -30,7 +31,8 @@ class DynamicPaperHunter(dynamic.CascadeHunter, PaperState):
         self.state_path = Path(state_path)
         if self.state_path.exists() and not reset:
             self.restore()
-        self.scanner = ContinuousScanner(self, config=self.strategy)
+        self.alerts = TelegramAlerts.from_environment()
+        self.scanner = ContinuousScanner(self, config=self.strategy, alerts=self.alerts)
 
     def settings(self):
         return {"mode": "dynamic_scan", **{name: getattr(self.strategy, name) for name in (
@@ -80,6 +82,9 @@ class DynamicPaperHunter(dynamic.CascadeHunter, PaperState):
             tasks = [asyncio.create_task(self.scan_loop()),
                      asyncio.create_task(self.exit_watcher()),
                      asyncio.create_task(self.report())]
+            if self.alerts is not None:
+                tasks.append(asyncio.create_task(self.alerts.run()))
+                dynamic.log.info("TELEGRAM SIGNAL ALERTS ENABLED")
             await asyncio.gather(*tasks)
         finally:
             for task in tasks:

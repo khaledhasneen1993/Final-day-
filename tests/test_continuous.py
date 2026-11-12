@@ -9,6 +9,7 @@ import aiohttp
 from binance_cascade_hunter_dynamic_v2_paper import V2PaperHunter as DynamicPaperHunter
 from continuous_scanner import CandleGap, ContinuousScanner
 from fixtures import DynamicPublicData
+from telegram_alerts import TelegramAlerts
 
 NOW = 1_800_000_000_000
 BTC = "BTC/USDT:USDT"
@@ -86,6 +87,21 @@ class ContinuousTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.bot.positions), 3)
         self.assertEqual(len(self.bot.exchange.trades), 3)
         self.assertGreaterEqual(self.bot.exchange.free, 0)
+
+    async def test_telegram_alerts_when_paper_positions_are_full(self):
+        alerts = self.scanner.alerts = TelegramAlerts("fake-token", "123")
+        self.bot.positions.update({BTC: {}, ETH: {}, SOL: {}})
+        self.scanner.ingest(event())
+        await self.scanner.evaluate(BTC)
+        self.mono += 1
+        await self.scanner.evaluate(BTC)
+
+        self.assertEqual(alerts.queue.qsize(), 1)
+        self.assertEqual(alerts.queue.get_nowait().splitlines(), [
+            "العملة: BTC/USDT", "الاتجاه: Long", "السعر الحالي: 102",
+            "وقف الخسارة: 100", "الهدف: 103.02",
+        ])
+        self.assertEqual(self.bot.exchange.trades, [])
 
     async def test_duplicate_updates_coalesce_and_do_not_duplicate_entry(self):
         for i in range(1, 30):

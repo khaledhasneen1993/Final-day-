@@ -39,8 +39,9 @@ def valid_rows(rows):
 
 
 class ContinuousScanner:
-    def __init__(self, bot, *, config=default_config, clock=time.monotonic, wall_clock=time.time):
+    def __init__(self, bot, *, config=default_config, clock=time.monotonic, wall_clock=time.time, alerts=None):
         self.bot = bot
+        self.alerts = alerts
         self.config = config
         self.clock = clock
         self.wall_clock = wall_clock
@@ -162,7 +163,8 @@ class ContinuousScanner:
         return {"side": "buy" if ret > 0 else "sell", "price": rows[-1][4], "ret": ret, "spike": spike}
 
     async def evaluate(self, symbol):
-        if symbol in self.bot.positions or len(self.bot.positions) >= self.config.MAX_CONCURRENT_POSITIONS:
+        if self.alerts is None and (symbol in self.bot.positions
+                                    or len(self.bot.positions) >= self.config.MAX_CONCURRENT_POSITIONS):
             return
         signal = self.signal(symbol)
         now = self.clock()
@@ -190,11 +192,14 @@ class ContinuousScanner:
             return
         async with self.bot.lock:
             signal = self.signal(symbol)
-            if (signal is None or symbol in self.bot.positions
-                    or len(self.bot.positions) >= self.config.MAX_CONCURRENT_POSITIONS):
+            if signal is None:
                 return
             if not ((signal["side"] == "buy" and imbalance > 0.35)
                     or (signal["side"] == "sell" and imbalance < -0.35)):
+                return
+            if self.alerts is not None:
+                self.alerts.enqueue(symbol, signal, list(self.histories[symbol]))
+            if symbol in self.bot.positions or len(self.bot.positions) >= self.config.MAX_CONCURRENT_POSITIONS:
                 return
             # First eligible completed check gets the slot; do not wait for all symbols.
             if await self.bot.enter(symbol, signal["side"], signal["price"]):
