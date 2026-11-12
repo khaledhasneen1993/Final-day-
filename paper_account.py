@@ -121,7 +121,10 @@ class PaperExchange:
 class PaperState:
     def restore(self):
         state = json.loads(self.state_path.read_text(encoding="utf-8"))
-        if (state["version"] != 1 or state["settings"] != self.settings()
+        settings = self.settings()
+        # Previous Final Day sessions used stricter entry filters and the same account rules.
+        previous_settings = {**settings, "CASCADE_THRESHOLD": 0.012, "MAX_SYMBOLS_TO_SCAN": 40}
+        if (state["version"] != 1 or state["settings"] not in (settings, previous_settings)
                 or state["fee_rate"] != self.exchange.fee_rate):
             raise ValueError("State settings differ; use a new --state path or --reset")
         wallet = float(state["balance_usdt"])

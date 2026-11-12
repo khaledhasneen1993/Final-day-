@@ -14,14 +14,14 @@ log = logging.getLogger("CASCADE")
 
 LEVERAGE = 50
 MAX_POSITION_PCT = 0.10          # 10% من رصيد المحفظة الحالي كهامش لكل صفقة
-CASCADE_THRESHOLD = 0.012        # 1.2%
+CASCADE_THRESHOLD = 0.01         # 1%
 VOLUME_SPIKE = 3.5
 TAKE_PROFIT_PCT = 0.018
 STOP_LOSS_PCT = 0.15             # حركة سعرية 15% من سعر الإشارة، لا 15% من الهامش
 COOLDOWN_SEC = 8
 
 SCAN_INTERVAL = 600              # 10 دقائق
-MAX_SYMBOLS_TO_SCAN = 40         # أعلى 40 عملة سيولة
+MAX_SYMBOLS_TO_SCAN = 50         # أعلى 50 عملة سيولة
 MAX_CONCURRENT_POSITIONS = 3     # أقصى عدد مراكز مفتوحة في نفس الوقت
 MIN_QUOTE_VOLUME = 15_000_000    # حجم تداول 24 ساعة أدنى (USDT)
 

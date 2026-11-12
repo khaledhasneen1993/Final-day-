@@ -76,6 +76,20 @@ class V2Tests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(settings["stop_basis"], "signal_price")
         self.assertEqual(settings["MAX_CONCURRENT_POSITIONS"], 3)
 
+    async def test_restores_positions_from_previous_scanner_settings(self):
+        await self.bot.enter("SOL/USDT:USDT", "buy", 100)
+        state = json.loads(self.path.read_text())
+        state["settings"].update(CASCADE_THRESHOLD=0.012, MAX_SYMBOLS_TO_SCAN=40)
+        self.path.write_text(json.dumps(state))
+
+        restored = V2PaperHunter(self.path, fee_rate=0, market_data=self.data)
+        self.assertEqual(restored.positions, self.bot.positions)
+        self.assertEqual(restored.exchange.positions, self.bot.exchange.positions)
+        restored.save()
+        settings = json.loads(self.path.read_text())["settings"]
+        self.assertEqual(settings["CASCADE_THRESHOLD"], 0.01)
+        self.assertEqual(settings["MAX_SYMBOLS_TO_SCAN"], 50)
+
     async def test_continuous_scanner_uses_v2_limit_of_three(self):
         scanner = ContinuousScanner(self.bot, config=v2, clock=lambda: 100,
                                     wall_clock=lambda: NOW / 1000)
